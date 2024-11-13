@@ -1,0 +1,9 @@
+# Python 3.10.15 (CityLearn requires must be >=3.7, <3.11)
+CityLearn==2.1.2
+ipywidgets
+matplotlib
+seaborn
+stable-baselines3
+shimmy
+requests
+beautifulsoup4
