@@ -6,7 +6,7 @@ Q Learning Implementation by CityLearn - mostly brought in as a template for how
 import math
 from typing import Any, List, Tuple
 import numpy as np
-from .base import Agent
+from .baseagent import Agent
 from citylearn.citylearn import CityLearnEnv
 
 
