@@ -61,26 +61,23 @@ class Sarsa(Agent):
         actions = []
 
         for i, o in enumerate(observations):
-            if not self.env.central_agent:
-                raise ValueError("Sarsa can only be implemented on a central agent")
+            '''
+            From documentation on central agent:
+
+            "If central_agent is True, a list of 1 sublist containing all building observation names is returned in the same order as buildings. The shared_observations names are only included in the first building’s observation names. If central_agent is False, a list of sublists is returned where each sublist is a list of 1 building’s observation names and the sublist in the same order as buildings"
+
+            We are enforcing central_agent to be true, so this is a list of only one sublist.
+            '''
+            # Discrete wrapper condenses continuous observations of many values into a single integer representing a unique combo of available bins, so each list is only one element long
+            obs_idx = o[0]
+            # Slicing q table so this is array of all action values at the given observation
+            act_vals = self.q_table[i][obs_idx]
+            # If all values for this observation are nan (unvisited), choose randomly
+            if np.isnan(act_vals).all():
+                action = self.action_space[i].sample()
             else:
-                '''
-                From documentation on central agent:
-
-                "If central_agent is True, a list of 1 sublist containing all building observation names is returned in the same order as buildings. The shared_observations names are only included in the first building’s observation names. If central_agent is False, a list of sublists is returned where each sublist is a list of 1 building’s observation names and the sublist in the same order as buildings"
-
-                We are enforcing central_agent to be true, so this is a list of only one sublist.
-                '''
-                # Discrete wrapper condenses continuous observations of many values into a single integer representing a unique combo of available bins, so each list is only one element long
-                obs_idx = o[0]
-                # Slicing q table so this is array of all action values at the given observation
-                act_vals = self.q_table[i][obs_idx]
-                # If all values for this observation are nan (unvisited), choose randomly
-                if np.isnan(act_vals).all():
-                    action = self.action_space[i].sample()
-                else:
-                    action = np.nanargmax(act_vals)
-                actions.append(action)
+                action = np.nanargmax(act_vals)
+            actions.append([action])
         return actions
 
     def update(self, observations: List[List[float]], actions: List[List[float]], reward: List[float], next_observations: List[List[float]], terminated: bool, truncated: bool):
