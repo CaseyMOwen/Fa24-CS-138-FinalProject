@@ -9,6 +9,7 @@ from gymnasium import spaces
 import numpy as np
 from citylearn.base import Environment
 from citylearn.citylearn import CityLearnEnv
+from tqdm import tqdm
 
 LOGGER = logging.getLogger()
 
@@ -151,7 +152,7 @@ class Agent(Environment):
         deterministic = False if deterministic is None else deterministic
         self.__set_logger(logging_level)
 
-        for episode in range(episodes):
+        for episode in tqdm(range(episodes)):
             deterministic = deterministic or (deterministic_finish and episode >= episodes - 1)
             observations, _ = self.env.reset()
             self.episode_time_steps = self.episode_tracker.episode_time_steps
