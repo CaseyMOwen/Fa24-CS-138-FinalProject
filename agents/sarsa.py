@@ -8,10 +8,6 @@ from typing import Any, List, Tuple
 import numpy as np
 from .baseagent import Agent
 from citylearn.citylearn import CityLearnEnv
-import joblib
-import sys
-sys.modules['sklearn.externals.joblib'] = joblib
-
 
 class Sarsa(Agent):
     def __init__(
