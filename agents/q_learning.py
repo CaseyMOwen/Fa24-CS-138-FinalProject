@@ -8,6 +8,9 @@ from .baseagent import Agent
 from citylearn.citylearn import CityLearnEnv
 
 class QLearning(Agent):
+    """ Assumed passed envirionment is discretized """
+
+    
     def __init__(
         self, 
         env: CityLearnEnv, 
@@ -32,12 +35,8 @@ class QLearning(Agent):
         """
         Return an action with the greatest Q-value for the given observation.
         
-        When central_agent is True, observations is a list of 1 sublist.
-        The sublist contains observation of all buildings
-
-        When central agent is False, observations is a list of n sublists
-        where n is number of buildings.
-        Each sublist contains observation of corresponding building.
+        Observations is a list of 1 sublist.
+        The sublist contains discretized observation of all buildings
         """
 
         actions = []
@@ -58,14 +57,9 @@ class QLearning(Agent):
         """
         Initialize values for all (observation, action) pairs in Q table to 0.
         
-        When central_agent is True, Q table has shape (1, (O.n, A.n)) where
+        Q table has shape (1, (O.n, A.n)) where
         O.n is the number of possible observation value and A.n is the number
         of possible action values.
-
-        When central_agent is False, Q table has shape(Element, (O_e.n, A_e.n))
-        where Element is the observation type (e.g indoor bulb temperature),
-        O_e.n is the number of possible observation values for the Element and
-        A_e.n is the number of possible action values for the Element.
         """
 
         q = []
@@ -92,17 +86,11 @@ class QLearning(Agent):
     ):
         """
         observations : 
-            List of sublists. When central agent = True, there is only one
-            sublist and it contains all observations in order of buildings.
-            When central agent is false, there is a sublist for each building
-            containing observations for corresponding building.
-        
+            List of sublists. Only one sublist in list and it contains all observations for all buildings
+
         actions :
             List of sublists. When central agent = True, there is one sublist
-            and it contains all actions in order of buildings.
-            When central agent is false, there is a sublisst for each building
-            containing actions for corresponding building.
-
+            and it contains action for all buildings.
         reward :
             List of reward for current time step.
 
