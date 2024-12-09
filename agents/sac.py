@@ -54,13 +54,13 @@ class SAC(Agent):
             self.q1_targets[i] = QNetwork(self.observation_dimension[i], self.action_dimension[i], hidden_dim).to(self.device)
             # Targets start with same parameters as parents
             self.q1_targets[i].load_state_dict(self.q1_nets[i].state_dict())
-            self.q1_optimizers = torch.optim.Adam(self.q1_nets[i].parameters(), lr=3e-4)
+            self.q1_optimizers[i] = torch.optim.Adam(self.q1_nets[i].parameters(), lr=3e-4)
 
             self.q2_nets[i] = QNetwork(self.observation_dimension[i], self.action_dimension[i], hidden_dim).to(self.device)
             self.q2_targets[i] = QNetwork(self.observation_dimension[i], self.action_dimension[i], hidden_dim).to(self.device)
             # Targets start with same parameters as parents
             self.q2_targets[i].load_state_dict(self.q2_nets[i].state_dict())
-            self.q2_optimizers = torch.optim.Adam(self.q2_nets[i].parameters(), lr=3e-4)
+            self.q2_optimizers[i] = torch.optim.Adam(self.q2_nets[i].parameters(), lr=3e-4)
 
     def update(self, observations: List[List[float]], actions: List[List[float]], reward: List[float], next_observations: List[List[float]], terminated: bool, truncated: bool) -> List[List[float]]:
         # For each data point type
@@ -87,7 +87,7 @@ class SAC(Agent):
         Perform the main, gradient step of the update on data point i 
         '''
         #  Sample all full batch from buffer as 2D numpy array - rows are number of batch elements, columns are state, action, rewards, next_states, terminateds
-        batch = np.random.choice(self.replay_buffer[i], self.mini_batch_size)
+        batch = random.choices(self.replay_buffer[i], k=self.mini_batch_size)
         # Unpack into columns
         states, actions, rewards, next_states, terminateds = zip(*batch)
         
@@ -123,6 +123,9 @@ class SAC(Agent):
         # Backpropogation to compute gradient
         q1_loss.backward()
         q2_loss.backward()
+        # Clip the gradient to help with convergence
+        torch.nn.utils.clip_grad_norm_(self.q1_nets[i].parameters(), 1)
+        torch.nn.utils.clip_grad_norm_(self.q2_nets[i].parameters(), 1)
         # Update network parameters based on calculated gradient
         self.q1_optimizers[i].step()
         self.q2_optimizers[i].step()
@@ -136,6 +139,7 @@ class SAC(Agent):
         actor_loss = (self.alpha*log_probs - q_new_actions).mean()
         self.actor_optimizers[i].zero_grad()
         actor_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.actors[i].parameters(), 1)
         self.actor_optimizers[i].step()
 
         #Update target networks
@@ -166,10 +170,11 @@ class PolicyNetwork(nn.Module):
         Feeds forward the state through the network to return a mean and standard deviation.
         '''
         # Propogate state through the network one step at a time
-        x = F.relu(self.fc1(state))
-        x = F.relu(self.fc2(x))
-        mean = self.mean(x)
-        log_std = self.log_std(x)
+        x1 = F.relu(self.fc1(state))
+        x2 = F.relu(self.fc2(x1))
+        mean = self.mean(x2)
+        log_std = self.log_std(x2)
+        log_std = torch.clamp(log_std, min=-20, max=2) #Avoid -inf when std -> 0
         std = log_std.exp()
         return mean, std
 
