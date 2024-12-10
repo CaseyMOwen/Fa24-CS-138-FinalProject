@@ -22,6 +22,21 @@ class Sarsa(Agent):
         self.previous_actions = None
         self.previous_observations = None
 
+    def learn(self, episodes: int, deterministic: bool = False):
+        for ep in range(episodes):
+            state_t, _ = self.env.reset()
+            action_t = self.predict(state_t, deterministic)
+            terminated = False
+
+            while not terminated:
+                state_t2, reward_t2, terminated, *_ = self.env.step(action_t)
+                action_t2 = self.predict(state_t2, deterministic)
+                
+                # update q function
+                self.update(state_t, action_t, reward_t2, state_t2, action_t2, terminated, False)
+                state_t = state_t2
+                action_t = action_t2
+
     def predict(self, observations: List[List[float]], deterministic: bool = False) -> List[List[float]]:
         """Provide actions for current time step.
 
@@ -76,7 +91,7 @@ class Sarsa(Agent):
             actions.append([action])
         return actions
 
-    def update(self, observations: List[List[float]], actions: List[List[float]], reward: List[float], next_observations: List[List[float]], terminated: bool, truncated: bool):
+    def update(self, observations: List[List[float]], actions: List[List[float]], reward: List[float], next_observations: List[List[float]], next_actions: List[List[float]], terminated: bool, truncated: bool):
         r"""Update Q-Table using Bellman equation.
 
         Parameters
@@ -94,27 +109,40 @@ class Sarsa(Agent):
         truncated : bool
             If episode truncates due to a time limit or a reason that is not defined as part of the task MDP.
         """
-        if not self.previous_actions or not self.previous_observations:
-            self.previous_actions = actions
-            self.previous_observations = observations
-            return
+        # if not self.previous_actions or not self.previous_observations:
+        #     self.previous_actions = actions
+        #     self.previous_observations = observations
+        #     return
 
         
         # Compute temporal difference target and error to udpate q-function
 
-        for i, (o, a, r) in enumerate(zip(observations, actions, reward)):
+
+        for i, (o, a, r, o_next, a_next) in enumerate(zip(observations, actions, reward, next_observations, next_actions)):
             # Current obs and current action
-            cur_o, cur_a = o[0], a[0]
-            last_o = self.previous_observations[0]
-            last_a = self.previous_actions[0]
-            last_q = self.q_table[i][last_o, last_a]
-            last_q = 0.0 if math.isnan(last_q) else last_q
-            current_q = self.q_table[i][cur_o, cur_a]
+            o, a, next_o, next_a = o[0], a[0], o_next[0], a_next[0]
+            current_q = self.q_table[i][o, a]
             current_q = 0.0 if math.isnan(current_q) else current_q
-            
+            next_q = self.q_table[i][o_next, a_next]
+            next_q = 0.0 if math.isnan(current_q) else current_q
+
             # update q
-            new_last_q = last_q + self.alpha*(r + self.gamma*current_q - last_q)
-            self.q_table[i][last_o, last_a] = new_last_q
+            new_q = current_q + self.alpha*(r + self.gamma*next_q - current_q)
+            self.q_table[i][o, a] = new_q
+        
+        # for i, (o, a, r) in enumerate(zip(observations, actions, reward)):
+        #     # Current obs and current action
+        #     cur_o, cur_a = o[0], a[0]
+        #     last_o = self.previous_observations[0]
+        #     last_a = self.previous_actions[0]
+        #     last_q = self.q_table[i][last_o, last_a]
+        #     last_q = 0.0 if math.isnan(last_q) else last_q
+        #     current_q = self.q_table[i][cur_o, cur_a]
+        #     current_q = 0.0 if math.isnan(current_q) else current_q
+            
+        #     # update q
+        #     new_last_q = last_q + self.alpha*(r + self.gamma*current_q - last_q)
+        #     self.q_table[i][last_o, last_a] = new_last_q
         
     def init_q_table(self):
         '''
