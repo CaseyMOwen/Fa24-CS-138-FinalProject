@@ -15,13 +15,18 @@ class QLearning(Agent):
         self, 
         env: CityLearnEnv, 
         epsilon: float = 0.1, 
+        epsilon_decay: bool = True,
+        min_epsilon: float = 0.01,
         learning_rate: float = 0.01, 
         discount_factor: float = 0.9, 
         **kwargs: Any
     ):
     
         super().__init__(env, **kwargs)
+        self.starting_epsilon = epsilon
         self.epsilon = epsilon
+        self.epsilon_decay = epsilon_decay
+        self.min_epsilon = min_epsilon
         self.learning_rate = learning_rate
         self.discount_factor = discount_factor
         self.q_table, self.explore_counts, self.exploit_counts = self.__initialize_q()
@@ -145,6 +150,10 @@ class QLearning(Agent):
             actions = [[s.sample()] for s in self.action_space]
             self.__explored = True
 
+        if self.epsilon_decay:
+            curr_episode = int(self.time_step / self.episode_time_steps)
+            self.epsilon = max(self.starting_epsilon ** (curr_episode + 1), self.min_epsilon)
+            
         self.actions = actions
         self.next_time_step()
         self.predictions.append(actions)
