@@ -20,13 +20,15 @@ from torch.distributions import Normal
 
 class SAC(Agent):
     def __init__(
-        self, env: CityLearnEnv, mini_batch_size:int=5, gamma:float=.99, tau:float=.005, entropy_coeff:float=0.2, **kwargs: Any,
+        self, env: CityLearnEnv, mini_batch_size:int=5, gamma:float=.99, tau:float=.005, **kwargs: Any,
     ):
         super().__init__(env, **kwargs)
         self.mini_batch_size = mini_batch_size
         self.gamma = gamma
         self.tau = tau
-        self.alpha = entropy_coeff
+
+
+
         self.replay_buffer = [[] for _ in self.action_space]
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.observation_dimension = [len(names) for names in self.observation_names]
@@ -45,6 +47,13 @@ class SAC(Agent):
         self.q2_nets = [None for _ in self.action_space]
         self.q2_targets = [None for _ in self.action_space]
         self.q2_optimizers = [None for _ in self.action_space]
+        
+        #Entropy
+        self.alphas =  [None for _ in self.action_space]
+        self.target_entropys =  [None for _ in self.action_space]
+        self.log_alphas =  [None for _ in self.action_space]
+        self.alpha_optimizers =  [None for _ in self.action_space]
+
 
         for i in range(len(self.action_space)):
             self.actors[i] = PolicyNetwork(self.observation_dimension[i], self.action_dimension[i], hidden_dim).to(self.device)
@@ -61,6 +70,11 @@ class SAC(Agent):
             # Targets start with same parameters as parents
             self.q2_targets[i].load_state_dict(self.q2_nets[i].state_dict())
             self.q2_optimizers[i] = torch.optim.Adam(self.q2_nets[i].parameters(), lr=3e-4)
+
+            self.alphas[i] = 1
+            self.target_entropys[i] = -np.prod(len(self.action_space)).item()  # heuristic value
+            self.log_alphas[i] = torch.zeros(1, requires_grad=True).to(self.device)
+            self.alpha_optimizers[i] = torch.optim.Adam([self.log_alphas[i]], lr=3e-4)
 
     def update(self, observations: List[List[float]], actions: List[List[float]], reward: List[float], next_observations: List[List[float]], terminated: bool, truncated: bool) -> List[List[float]]:
         # For each data point type
@@ -99,15 +113,16 @@ class SAC(Agent):
         next_states = torch.FloatTensor(next_states, device=self.device)
         terminateds = torch.FloatTensor(terminateds, device=self.device).unsqueeze(1)
 
-        # Sample an action from the policy based on the next state
-        new_next_actions, new_log_probs = self.actors[i].sample(next_states)
+        with torch.no_grad():
+            # Sample an action from the policy based on the next state
+            new_next_actions, new_log_probs = self.actors[i].sample(next_states)
 
-        # Update the q values from the target networks - soft update
-        q1_next_target = self.q1_targets[i](next_states, new_next_actions)
-        q2_next_target = self.q2_targets[i](next_states, new_next_actions)
-        # Select the min of each of the target network outputs as the overall q
-        q_next_target = torch.min(q1_next_target, q2_next_target)
-        q_next_target = rewards + (1 - terminateds)*self.gamma*(q_next_target - self.alpha*new_log_probs)
+            # Update the q values from the target networks - soft update
+            q1_next_target = self.q1_targets[i](next_states, new_next_actions)
+            q2_next_target = self.q2_targets[i](next_states, new_next_actions)
+            # Select the min of each of the target network outputs as the overall q
+            q_next_target = torch.min(q1_next_target, q2_next_target)
+            q_next_target = rewards + (1 - terminateds)*self.gamma*(q_next_target - self.alphas[i]*new_log_probs)
 
         # Update the q networks themselves - the critics
 
@@ -136,11 +151,19 @@ class SAC(Agent):
         q2_new_actions = self.q2_nets[i](states, new_actions)
         q_new_actions = torch.min(q1_new_actions, q2_new_actions)
 
-        actor_loss = (self.alpha*log_probs - q_new_actions).mean()
+        actor_loss = (self.alphas[i]*log_probs - q_new_actions).mean()
         self.actor_optimizers[i].zero_grad()
         actor_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.actors[i].parameters(), 1)
         self.actor_optimizers[i].step()
+
+        #Update entropy parameter 
+        alpha_loss = (self.log_alphas[i] * (-log_probs - self.target_entropys[i]).detach()).mean()
+        self.alpha_optimizers[i].zero_grad()
+        alpha_loss.backward()
+        self.alpha_optimizers[i].step()
+        self.alphas[i] = self.log_alphas[i].exp()
+
 
         #Update target networks
         self.soft_update(self.q1_targets[i], self.q1_nets[i], self.tau)
