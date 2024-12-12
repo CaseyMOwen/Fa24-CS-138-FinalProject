@@ -11,8 +11,6 @@ import math
 from citylearn.citylearn import CityLearnEnv
 
 # Functions taken straight from tutorial - may be useful, but may need to be modified to work
-
-
 def plot_actions(actions_list: List[List[float]], title: str, env:CityLearnEnv) -> plt.Figure:
     """Plots action time series for different buildings
 
@@ -46,7 +44,7 @@ def plot_actions(actions_list: List[List[float]], title: str, env:CityLearnEnv) 
     ax.set_ylabel(r'$\frac{kWh}{kWh_{capacity}}$')
     ax.xaxis.set_major_locator(ticker.MultipleLocator(24))
     ax.set_title(title)
-
+    
     return fig
 
 def plot_rewards(ax: plt.Axes, rewards: List[float], title: str) -> plt.Axes:
