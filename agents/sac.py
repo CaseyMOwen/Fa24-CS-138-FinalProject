@@ -26,15 +26,17 @@ class SAC(Agent):
         self.mini_batch_size = mini_batch_size
         self.gamma = gamma
         self.tau = tau
+        self.action_scaling_coefficient = 0.5
 
 
 
         self.replay_buffer = [[] for _ in self.action_space]
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.observation_dimension = [len(names) for names in self.observation_names]
-        self.init_networks(200)
+        self.init_networks(50)
 
     def init_networks(self, hidden_dim:int):
+        learning_rate = .0003
         # Each variable is a list of several networks, one for each feature we are acting on (battery storage, thermal storage, etc.) 
         self.actors = [None for _ in self.action_space]
         # self.actor_targets = [None] * len(self.action_dimension)
@@ -56,25 +58,25 @@ class SAC(Agent):
 
 
         for i in range(len(self.action_space)):
-            self.actors[i] = PolicyNetwork(self.observation_dimension[i], self.action_dimension[i], hidden_dim).to(self.device)
-            self.actor_optimizers[i] = torch.optim.Adam(self.actors[i].parameters(), lr=3e-4)
+            self.actors[i] = PolicyNetwork(self.observation_dimension[i], self.action_dimension[i], self.action_space[i], self.action_scaling_coefficient, hidden_dim).to(self.device)
+            self.actor_optimizers[i] = torch.optim.Adam(self.actors[i].parameters(), lr=learning_rate)
 
             self.q1_nets[i] = QNetwork(self.observation_dimension[i], self.action_dimension[i], hidden_dim).to(self.device)
             self.q1_targets[i] = QNetwork(self.observation_dimension[i], self.action_dimension[i], hidden_dim).to(self.device)
             # Targets start with same parameters as parents
             self.q1_targets[i].load_state_dict(self.q1_nets[i].state_dict())
-            self.q1_optimizers[i] = torch.optim.Adam(self.q1_nets[i].parameters(), lr=3e-4)
+            self.q1_optimizers[i] = torch.optim.Adam(self.q1_nets[i].parameters(), lr=learning_rate)
 
             self.q2_nets[i] = QNetwork(self.observation_dimension[i], self.action_dimension[i], hidden_dim).to(self.device)
             self.q2_targets[i] = QNetwork(self.observation_dimension[i], self.action_dimension[i], hidden_dim).to(self.device)
             # Targets start with same parameters as parents
             self.q2_targets[i].load_state_dict(self.q2_nets[i].state_dict())
-            self.q2_optimizers[i] = torch.optim.Adam(self.q2_nets[i].parameters(), lr=3e-4)
+            self.q2_optimizers[i] = torch.optim.Adam(self.q2_nets[i].parameters(), lr=learning_rate)
 
             self.alphas[i] = 1
             self.target_entropys[i] = -np.prod(len(self.action_space)).item()  # heuristic value
             self.log_alphas[i] = torch.zeros(1, requires_grad=True).to(self.device)
-            self.alpha_optimizers[i] = torch.optim.Adam([self.log_alphas[i]], lr=3e-4)
+            self.alpha_optimizers[i] = torch.optim.Adam([self.log_alphas[i]], lr=learning_rate)
 
     def update(self, observations: List[List[float]], actions: List[List[float]], reward: List[float], next_observations: List[List[float]], terminated: bool, truncated: bool) -> List[List[float]]:
         # For each data point type
@@ -85,11 +87,13 @@ class SAC(Agent):
 
     def predict(self, observations:List[List[float]], deterministic: bool = None):
         actions = []
-
         for i, state in enumerate(observations):
             state = torch.FloatTensor(state, device=self.device).unsqueeze(0)
             result = self.actors[i].sample(state)
             actions.append(result[0].detach().cpu().numpy()[0])
+            # if i == 0:
+            #     print(f'Obervations: {observations}')
+            #     print(f'Actions: {actions[-1]}')
     
         self.actions = actions
         self.next_time_step()
@@ -130,8 +134,8 @@ class SAC(Agent):
         q1 = self.q1_nets[i](states, actions) 
         q2 = self.q2_nets[i](states, actions)
         # Compute loss for each network using MSE between q value from this network and q value from target networks
-        q1_loss = F.mse_loss(q1, q_next_target.detach())
-        q2_loss = F.mse_loss(q2, q_next_target.detach())
+        q1_loss = nn.SmoothL1Loss()(q1, q_next_target.detach())
+        q2_loss = nn.SmoothL1Loss()(q2, q_next_target.detach())
         # Reset Gradients to 0
         self.q1_optimizers[i].zero_grad()
         self.q2_optimizers[i].zero_grad()
@@ -180,13 +184,19 @@ class PolicyNetwork(nn.Module):
     '''
     Neural Network representing a computationally tractable policy using a gaussian distribution. The network takes in a state, and outputs a mean and standard deviation of the given action, a continuous value, to be sampled from. Uses two hidden layers of the same size. The "actor" network.
     '''
-    def __init__(self, state_dim:int, action_dim:int, hidden_dim:int=200):
+    def __init__(self, state_dim:int, action_dim:int, action_space, action_scaling_coef, hidden_dim:int=200):
         super(PolicyNetwork, self).__init__()
         # Initialize each layer individually
         self.fc1 = nn.Linear(state_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.mean = nn.Linear(hidden_dim, action_dim)
         self.log_std = nn.Linear(hidden_dim, action_dim)
+
+        self.action_scale = torch.FloatTensor(
+        action_scaling_coef * (action_space.high - action_space.low) / 2.)
+        self.action_bias = torch.FloatTensor(
+        action_scaling_coef * (action_space.high + action_space.low) / 2.)
+        self.epsilon = 1e-6
 
     def forward(self, state:torch.Tensor):
         '''
@@ -208,9 +218,19 @@ class PolicyNetwork(nn.Module):
         mean, std = self.forward(state)
         dist = Normal(mean, std)
         # rsample instead of sample to use the reparameterization trick - instead of sampling directly, sample from standard normal and scale and shift it
-        action = dist.rsample()  
-        # Get log probability for each dimension, then sum
-        log_prob = dist.log_prob(action).sum(dim=-1, keepdim=True)
+        # action = dist.rsample()  
+        # # Get log probability for each dimension, then sum
+        # log_prob = dist.log_prob(action).sum(dim=-1, keepdim=True)
+
+        x_t = dist.rsample()  # for reparameterization trick (mean + std * N(0,1))
+        y_t = torch.tanh(x_t)
+        action = y_t * self.action_scale + self.action_bias
+        log_prob = dist.log_prob(x_t)
+        # Enforcing Action Bound
+        log_prob -= torch.log(self.action_scale * (1 - y_t.pow(2)) + self.epsilon)
+        log_prob = log_prob.sum(1, keepdim=True)
+        mean = torch.tanh(mean) * self.action_scale + self.action_bias
+
         return action, log_prob
 
 class QNetwork(nn.Module):
