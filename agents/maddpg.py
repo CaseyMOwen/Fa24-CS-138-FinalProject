@@ -1,34 +1,37 @@
 """
+This script demonstrates an enhanced version of the MADDPG integration into the CityLearn environment.
+It incorporates:
+- Normalizing observations.
+- Using Ornstein-Uhlenbeck (OU) noise for exploration.
+- Implementing a warm-up period before training starts.
+- Adjusting training duration and logging intermediate metrics.
+- Providing reward scaling and improved logging for diagnostics.
+
 Assumptions & Notes:
 --------------------
-1. In this example, we are controlling two radomly selected buildings (agents) assuming the environment 
-   provides appropriate observations and action spaces for these buildings. We are using a simplified 
-   observation space: ACTIVE_OBSERVATIONS = ['hour', 'month', 'indoor_dry_bulb_temperature']. 
+1. Requires CityLearn environment and dataset:
+   from citylearn.citylearn import CityLearnEnv
 
-2. The action space is continuous and expected to be in the range [-1, 1]. The exact dimension 
-   depends on the number and type of controllable devices. Here we assume that each agent (building) 
-   has at least one continuous action dimension.
+2. We assume a scenario with two buildings (agents). The code sets building_ids = [0, 1]. Adjust as needed.
 
-3. MADDPG involves:
-   - A decentralized actor for each agent (outputting continuous actions).
-   - A centralized critic for each agent that conditions on all agents' observations and actions.
+3. Observations are assumed to be [hour, month, indoor_dry_bulb_temperature]. This code normalizes them:
+   - hour: normalized by dividing by 24.0
+   - month: normalized by dividing by 12.0
+   - indoor_dry_bulb_temperature: assumed to be in roughly [0°C, 40°C] for demonstration, and normalized to [0,1] by dividing by 40.
+   Adjust this normalization as needed for your specific scenario and data ranges.
 
-4. Hyperparameters have defauly values assigned while we've provided comments in the code that suggest alternative choices.
-   For example, you can modify the learning rate, network architecture, or tau if training is unstable.
+4. Rewards may be too sparse or not aligned with battery usage goals. Consider improving the reward function within the environment or scaling rewards if not learning effectively.
+   In this code, we add a reward scaling factor.
 
-5. This script sets up the environment, trains for a number of episodes, and logs episode-level 
-   rewards to a CSV file. 
+5. A warm-up period is introduced (warmup_steps = 1000), during which experience is collected but no training occurs.
 
-6. Custom logging of additional metrics or using frameworks like TensorBoard can be easily integrated 
-   if desired. Here we show basic CSV logging of total episode rewards.
+6. Ornstein-Uhlenbeck (OU) noise is added for better exploration. Hyperparameters for OU noise can be tuned.
 
-7. To run:
-   `maddpg.py`
+7. The code logs episode rewards and prints intermediate Q-values and actions periodically for debugging.
 
-   Ensure that:
-   - The dataset schema ('citylearn_challenge_2022_phase_all') is available.
-   - CityLearn and its dependencies are installed.
-   - You have write access to create "maddpg_training_log.csv" in the current directory.
+8. Increase the number of episodes and consider running for longer to allow the policy to converge.
+
+This code is a template. Adjust hyperparameters, normalization ranges, reward structure, and exploration parameters as needed.
 """
 
 import os
@@ -48,20 +51,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ==========================
-# Replay Buffer for Experience Storage
+# Replay Buffer
 # ==========================
 class ReplayBuffer:
-    def __init__(self, obs_dim, act_dim, num_agents, buffer_size=int(1e6), batch_size=256, device='cpu'):
+    def __init__(self, obs_dim, act_dim, num_agents, buffer_size=int(2e6), batch_size=512, device='cpu'):
         """
-        A simple replay buffer that stores tuples of (obs, act, rew, next_obs, done).
-
-        Parameters:
-        - obs_dim: Dimension of single-agent observation vector.
-        - act_dim: Dimension of single-agent action vector.
-        - num_agents: Number of agents in the environment.
-        - buffer_size: Maximum number of transitions to store.
-        - batch_size: Number of samples per training batch.
-        - device: 'cpu' or 'cuda', for PyTorch tensor placement.
+        A ReplayBuffer for storing experience tuples (o, a, r, o', d).
         """
         self.obs_dim = obs_dim
         self.act_dim = act_dim
@@ -79,9 +74,6 @@ class ReplayBuffer:
         self.ptr, self.size = 0, 0
 
     def store(self, obs, act, rew, next_obs, done):
-        """
-        Store a single transition in the replay buffer.
-        """
         idx = self.ptr
         self.obs_buf[idx] = obs
         self.act_buf[idx] = act
@@ -92,13 +84,8 @@ class ReplayBuffer:
         self.size = min(self.size + 1, self.buffer_size)
 
     def sample_batch(self):
-        """
-        Sample a random batch of transitions for training.
-        Returns a dictionary of PyTorch tensors on the designated device.
-        """
         if self.size < self.batch_size:
-            return None  # Not enough samples yet
-
+            return None
         idxs = np.random.randint(0, self.size, size=self.batch_size)
         batch = dict(
             obs=torch.FloatTensor(self.obs_buf[idxs]).to(self.device),
@@ -110,14 +97,10 @@ class ReplayBuffer:
         return batch
 
 # ==========================
-# Neural Network Utilities
+# Neural Networks
 # ==========================
 class MLP(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_sizes=[256, 256], activation=nn.ReLU, output_activation=nn.Identity):
-        """
-        A simple Multi-Layer Perceptron.
-        Can modify hidden_sizes, activation as needed.
-        """
         super().__init__()
         layers = []
         prev_size = input_dim
@@ -135,12 +118,8 @@ class MLP(nn.Module):
 
 class Actor(nn.Module):
     def __init__(self, obs_dim, act_dim, hidden_sizes=[256,256], device='cpu'):
-        """
-        Actor network for deterministic policy, outputs continuous actions in range [-1, 1].
-        """
         super().__init__()
         self.device = device
-        # Output activation: Tanh to ensure actions are in [-1, 1]
         self.net = MLP(obs_dim, act_dim, hidden_sizes, activation=nn.ReLU, output_activation=nn.Tanh).to(device)
 
     def forward(self, obs):
@@ -148,39 +127,39 @@ class Actor(nn.Module):
 
 class Critic(nn.Module):
     def __init__(self, total_obs_dim, total_act_dim, hidden_sizes=[256, 256], device='cpu'):
-        """
-        Centralized critic that takes as input all agents' observations and actions.
-        """
         super().__init__()
         self.device = device
-        # Single scalar Q-value output
         self.net = MLP(total_obs_dim + total_act_dim, 1, hidden_sizes, activation=nn.ReLU, output_activation=None).to(device)
 
     def forward(self, obs_all, act_all):
-        """
-        obs_all: (batch, num_agents*obs_dim)
-        act_all: (batch, num_agents*act_dim)
-        """
         x = torch.cat([obs_all, act_all], dim=-1)
         return self.net(x)
 
 # ==========================
-# MADDPG Agent Class
+# Ornstein-Uhlenbeck Noise
+# ==========================
+class OUNoise:
+    def __init__(self, size, mu=0.0, theta=0.15, sigma=0.2, dt=1e-2):
+        self.size = size
+        self.mu = mu
+        self.theta = theta
+        self.sigma = sigma
+        self.dt = dt
+        self.x_prev = np.zeros(self.size)
+
+    def reset(self):
+        self.x_prev = np.zeros(self.size)
+
+    def sample(self):
+        x = self.x_prev + self.theta*(self.mu - self.x_prev)*self.dt + self.sigma*np.sqrt(self.dt)*np.random.randn(self.size)
+        self.x_prev = x
+        return x
+
+# ==========================
+# MADDPG Agent
 # ==========================
 class MADDPGAgent:
     def __init__(self, num_agents, obs_dim, act_dim, gamma=0.99, lr=1e-3, tau=0.005, device='cpu'):
-        """
-        Initialize MADDPG for a set of agents.
-
-        Parameters:
-        - num_agents: Number of agents (e.g., number of buildings).
-        - obs_dim: Dimensionality of each agent's observation.
-        - act_dim: Dimensionality of each agent's action.
-        - gamma: Discount factor.
-        - lr: Learning rate for both actors and critics.
-        - tau: Soft update parameter for target networks.
-        - device: 'cpu' or 'cuda'.
-        """
         self.num_agents = num_agents
         self.obs_dim = obs_dim
         self.act_dim = act_dim
@@ -189,7 +168,7 @@ class MADDPGAgent:
         self.tau = tau
         self.device = device
 
-        # Create actor and critic networks for each agent
+        # Actors and Critics
         self.actors = [Actor(obs_dim, act_dim, device=device) for _ in range(num_agents)]
         self.actor_targets = deepcopy(self.actors)
         self.critics = [Critic(num_agents*obs_dim, num_agents*act_dim, device=device) for _ in range(num_agents)]
@@ -198,40 +177,33 @@ class MADDPGAgent:
         self.actor_optimizers = [optim.Adam(a.parameters(), lr=self.lr) for a in self.actors]
         self.critic_optimizers = [optim.Adam(c.parameters(), lr=self.lr) for c in self.critics]
 
-        # Exploration noise settings
-        self.noise_std = 0.1
+        # OU Noise per agent
+        self.noises = [OUNoise(act_dim) for _ in range(num_agents)]
 
-    def select_action(self, obs):
-        """
-        Select action for each agent based on current actor and add exploration noise.
-        obs: list or array of shape [num_agents, obs_dim]
-        """
+    def select_action(self, obs, add_noise=True):
         actions = []
         for i, actor in enumerate(self.actors):
             obs_i = torch.FloatTensor(obs[i]).unsqueeze(0).to(self.device)
             act_i = actor(obs_i).cpu().detach().numpy()[0]
-            # Add Gaussian noise for exploration
-            act_i += np.random.normal(0, self.noise_std, size=self.act_dim)
+            if add_noise:
+                # Use OU noise for better exploration
+                noise = self.noises[i].sample()
+                act_i += noise
             act_i = np.clip(act_i, -1, 1)
             actions.append(act_i)
         return np.array(actions)
 
     def update(self, replay_buffer):
-        """
-        Update actors and critics using one batch sample from the replay buffer.
-        Performs a soft update of target networks afterward.
-        """
         batch = replay_buffer.sample_batch()
         if batch is None:
-            return  # Not enough data yet
-
+            return
         obs, act, rew, next_obs, done = batch['obs'], batch['act'], batch['rew'], batch['next_obs'], batch['done']
-        # Flatten along agent dimension
+
+        # Flatten
         obs_all = obs.reshape(obs.shape[0], -1)
         act_all = act.reshape(act.shape[0], -1)
         next_obs_all = next_obs.reshape(next_obs.shape[0], -1)
 
-        # Compute next actions from target actors
         with torch.no_grad():
             next_act = []
             for i, actor_targ in enumerate(self.actor_targets):
@@ -242,7 +214,7 @@ class MADDPGAgent:
         # Update critics
         for i in range(self.num_agents):
             q_target = self.critic_targets[i](next_obs_all, next_act_all)
-            y = rew[:, i].unsqueeze(-1) + self.gamma * (1 - done) * q_target
+            y = rew[:, i].unsqueeze(-1) + self.gamma * (1 - done)*q_target
             q_val = self.critics[i](obs_all, act_all)
             critic_loss = nn.MSELoss()(q_val, y)
             self.critic_optimizers[i].zero_grad()
@@ -251,13 +223,11 @@ class MADDPGAgent:
 
         # Update actors
         for i in range(self.num_agents):
-            # For the i-th actor, we need to compute the actor loss
             act_i_list = []
             for j, actor in enumerate(self.actors):
                 if j == i:
                     act_i_list.append(actor(obs[:, j, :]))
                 else:
-                    # Other agents' actions no gradient wrt this actor
                     act_i_list.append(self.actors[j](obs[:, j, :]).detach())
             act_i_all = torch.cat(act_i_list, dim=-1)
             actor_loss = -self.critics[i](obs_all, act_i_all).mean()
@@ -266,90 +236,118 @@ class MADDPGAgent:
             actor_loss.backward()
             self.actor_optimizers[i].step()
 
-        # Soft update targets
+        # Soft update
         self._soft_update()
 
     def _soft_update(self):
-        """
-        Soft update target networks using (tau * local + (1 - tau) * target).
-        """
         for i in range(self.num_agents):
             for param, target_param in zip(self.critics[i].parameters(), self.critic_targets[i].parameters()):
-                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+                target_param.data.copy_(self.tau * param.data + (1-self.tau)*target_param.data)
             for param, target_param in zip(self.actors[i].parameters(), self.actor_targets[i].parameters()):
-                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+                target_param.data.copy_(self.tau * param.data + (1-self.tau)*target_param.data)
+
+    def reset_noise(self):
+        for noise in self.noises:
+            noise.reset()
 
 # ==========================
-# Main Training Procedure
+# Utility Functions
+# ==========================
+
+def normalize_observation(obs):
+    """
+    Normalize the given observation vector [hour, month, indoor_temp].
+    Adjust ranges as needed for your environment.
+    hour in [0,23], month in [1,12], indoor_temp in [0°C,40°C] (example).
+    """
+    hour = obs[0] / 24.0
+    month = obs[1] / 12.0
+    # Assume indoor_temp roughly in [0,40]
+    indoor_temp = obs[2] / 40.0
+    return np.array([hour, month, indoor_temp], dtype=np.float32)
+
+# ==========================
+# Main Training
 # ==========================
 if __name__ == "__main__":
-    # Define the dataset name or path
     DATASET_NAME = 'citylearn_challenge_2022_phase_all'
-
-    # Create the CityLearn environment
     env = CityLearnEnv(schema=DATASET_NAME)
 
-    # Randomly select 2 buildings or define them explicitly
     building_ids = [0, 1]
-    env.building_ids = building_ids  # This may differ based on how you've set up your code
-
+    env.building_ids = building_ids
     obs = env.reset()
-    num_agents = len(building_ids)
 
-    # We assume obs is something like a list of [obs_for_building_0, obs_for_building_1]
-    # Each obs_for_building_i is a vector of dimension obs_dim.
+    # Normalize initial observation
+    obs = [normalize_observation(o) for o in obs]
+
+    num_agents = len(building_ids)
     obs_dim = len(obs[0])
-    # Action dimension depends on environment's action space
-    # Assume each building has identical action dimension
     act_dim = env.action_space[0].shape[0]
 
-    # Initialize MADDPG
+    # Instantiate MADDPG
     agent = MADDPGAgent(num_agents=num_agents, obs_dim=obs_dim, act_dim=act_dim, device='cpu')
 
-    # Create a replay buffer
+    # Replay Buffer
     replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, num_agents=num_agents, device='cpu')
 
-    # Training parameters
-    num_episodes = 10            # Increase for more training
-    steps_per_episode = 24 * 7   # Assuming 7 days at hourly steps = 168 steps/episode
+    num_episodes = 100             # increased from 10 to allow more learning
+    steps_per_episode = 24 * 7     # 168 steps/episode for 7 days hourly
+    warmup_steps = 1000            # warm-up period before training
+    reward_scale = 0.01            # scale rewards if too large/small
     log_file = "maddpg_training_log.csv"
 
-    # Open CSV for logging
+    steps_collected = 0
+
     with open(log_file, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(["Episode", "Total_Reward"])  # Header for logging
-
+        writer.writerow(["Episode", "Total_Reward"])
         for ep in range(num_episodes):
             obs = env.reset()
+            obs = [normalize_observation(o) for o in obs]
+            agent.reset_noise()
             total_reward = 0.0
-            for t in range(steps_per_episode):
-                # Select actions with exploration
-                action = agent.select_action(obs)
 
-                # Step environment
+            for t in range(steps_per_episode):
+                action = agent.select_action(obs, add_noise=True)
                 next_obs, rewards, done, info = env.step(action)
 
-                # If rewards is a scalar or single value, broadcast to all agents
+                # If scalar reward, broadcast to all agents
                 if np.isscalar(rewards):
                     rewards = np.array([rewards]*num_agents)
 
-                # Store the transition
-                replay_buffer.store(np.array(obs), np.array(action), rewards, np.array(next_obs), np.array([done]))
+                # Normalize next_obs
+                next_obs = [normalize_observation(o) for o in next_obs]
 
-                # Update the agent (assuming enough samples)
-                agent.update(replay_buffer)
+                # Scale rewards
+                rewards = rewards * reward_scale
+
+                replay_buffer.store(np.array(obs), np.array(action), rewards, np.array(next_obs), np.array([done]))
+                steps_collected += 1
 
                 obs = next_obs
                 total_reward += sum(rewards)
 
+                # Train only after warmup
+                if steps_collected > warmup_steps:
+                    agent.update(replay_buffer)
+
                 if done:
                     break
 
-            logger.info(f"Episode {ep}, Total Reward: {total_reward}")
+            # Logging per episode
             writer.writerow([ep, total_reward])
+            logger.info(f"Episode {ep}, Total Reward: {total_reward}")
 
-    logger.info("Training complete!")
-    logger.info(f"Training log saved to {log_file}")
+            # Debug logging: check actions and Q-values periodically
+            if ep % 10 == 0:
+                # Sample Q-value for debugging
+                test_batch = replay_buffer.sample_batch()
+                if test_batch:
+                    test_obs = test_batch['obs'].reshape(-1, num_agents*obs_dim)
+                    test_act = test_batch['act'].reshape(-1, num_agents*act_dim)
+                    q_values = agent.critics[0](test_obs, test_act)
+                    logger.info(f"Episode {ep}: mean Q-value (agent0) = {q_values.mean().item():.3f}")
 
-    # After training, one can evaluate the policy on unseen subsets by resetting the environment 
-    # with different conditions and disabling exploration noise (set agent.noise_std = 0).
+                logger.info(f"Episode {ep}: Example actions last step = {action}, reward this episode = {total_reward}")
+
+    logger.info("Training complete! Check maddpg_training_log.csv for results.")
