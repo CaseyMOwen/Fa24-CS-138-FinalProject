@@ -31,7 +31,7 @@ Assumptions & Notes:
 
 8. Increase the number of episodes and consider running for longer to allow the policy to converge.
 
-This code is a template. Adjust hyperparameters, normalization ranges, reward structure, and exploration parameters as needed.
+Adjust hyperparameters, normalization ranges, reward structure, and exploration parameters as needed.
 """
 
 import os
