@@ -1,5 +1,5 @@
 """
-Q Learning Implementation
+Q Learning Implementation. Utilized CityLearn's Q-Learning implementation structure to better interface with CityLearn Env.
 """
 
 from typing import Any, List, Tuple
