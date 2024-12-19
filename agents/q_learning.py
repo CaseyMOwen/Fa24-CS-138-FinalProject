@@ -8,7 +8,7 @@ from .baseagent import Agent
 from citylearn.citylearn import CityLearnEnv
 
 class QLearning(Agent):
-    """ Assumed passed envirionment is discretized """
+    """ Assumes passed envirionment is discretized """
 
     
     def __init__(
@@ -21,6 +21,13 @@ class QLearning(Agent):
         discount_factor: float = 0.9, 
         **kwargs: Any
     ):
+        """
+        Initializes a Q-learning agent
+
+        Epsilon defines probability for agent to select a random action. During training, epsilon decays at each timestep to epsilon/timestep down to the minimum
+        Epsilon provided. Learning rate determines the rate at which action values are updated towards the target action values. Discount factor determines
+        importance of future rewards: higher discount factor places higher importance on future rewards.
+        """
     
         super().__init__(env, **kwargs)
         self.starting_epsilon = epsilon
