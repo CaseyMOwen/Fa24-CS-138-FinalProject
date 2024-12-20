@@ -1,5 +1,5 @@
 '''
-Custom Sarsa Implementation. Taking much of structural organization of an agent from CityLearn Q Learning
+Custom Sarsa Implementation. Taking much of structural organization of an agent from CityLearn Q Learning implementation
 '''
 
 
