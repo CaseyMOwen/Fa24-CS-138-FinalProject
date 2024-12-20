@@ -1,4 +1,5 @@
 '''
+Custom Implementation of SAC agent for use with CityLearn. Uses code from sources linked below.
 Sources: 
 https://github.com/ErickRosete/Robotics_Haptics/blob/c4232e5fbfdb6f6cce35755b2d3563facf8ee6b2/Soft_Actor_Critic/sac_agent.py#L114
 https://www.citylearn.net/_modules/citylearn/agents/sac.html
@@ -22,6 +23,9 @@ class SAC(Agent):
     def __init__(
         self, env: CityLearnEnv, mini_batch_size:int=5, gamma:float=.99, tau:float=.005, **kwargs: Any,
     ):
+        '''
+        Agent implementation of a Soft-Actor Critic Agent with automatic entropy adjustment, for use with CityLearn environment.
+        '''
         super().__init__(env, **kwargs)
         self.mini_batch_size = mini_batch_size
         self.gamma = gamma
@@ -36,6 +40,9 @@ class SAC(Agent):
         self.init_networks(50)
 
     def init_networks(self, hidden_dim:int):
+        '''
+        Initializes each neural network as a list of networks, one for each observation varaible. Uses a learning rate of 3e-4.
+        '''
         learning_rate = .0003
         # Each variable is a list of several networks, one for each feature we are acting on (battery storage, thermal storage, etc.) 
         self.actors = [None for _ in self.action_space]
@@ -79,6 +86,9 @@ class SAC(Agent):
             self.alpha_optimizers[i] = torch.optim.Adam([self.log_alphas[i]], lr=learning_rate)
 
     def update(self, observations: List[List[float]], actions: List[List[float]], reward: List[float], next_observations: List[List[float]], terminated: bool, truncated: bool) -> List[List[float]]:
+        '''
+        Updates the agent according to obsercations, actions, a reward, and the observations at the next state, as well as information about whether the episode has ended or is truncated.
+        '''
         # For each data point type
         for i, (o, a, r, n) in enumerate(zip(observations, actions, reward, next_observations)):
             self.replay_buffer[i].append((o, a, r, n, terminated))
@@ -86,14 +96,14 @@ class SAC(Agent):
             self.update_gradient_step(i)
 
     def predict(self, observations:List[List[float]], deterministic: bool = None):
+        '''
+        Determines a set of actions based on a set of observations.
+        '''
         actions = []
         for i, state in enumerate(observations):
             state = torch.FloatTensor(state, device=self.device).unsqueeze(0)
             result = self.actors[i].sample(state)
             actions.append(result[0].detach().cpu().numpy()[0])
-            # if i == 0:
-            #     print(f'Obervations: {observations}')
-            #     print(f'Actions: {actions[-1]}')
     
         self.actions = actions
         self.next_time_step()
@@ -102,7 +112,7 @@ class SAC(Agent):
 
     def update_gradient_step(self, i:int):
         '''
-        Perform the main, gradient step of the update on data point i 
+        Perform the main, gradient step of the update on data point i. Core SAC algorithm
         '''
         #  Sample all full batch from buffer as 2D numpy array - rows are number of batch elements, columns are state, action, rewards, next_states, terminateds
         batch = random.choices(self.replay_buffer[i], k=self.mini_batch_size)
